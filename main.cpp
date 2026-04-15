@@ -59,7 +59,14 @@ public:
     {};
 
     class dirtyException
-    {};
+    {
+        int dirty_block_data;
+        int dirty_block_address;
+    public:
+        dirtyException(int data = 0, int address = 0) : dirty_block_data(data), dirty_block_address(address) {}
+        int get_dirty_data() const { return dirty_block_data; }
+        int get_dirty_address() const { return dirty_block_address; }
+    };
 
     int read_data(int address)
     {
@@ -74,7 +81,29 @@ public:
         {
             if(blocks[index].is_valid() && blocks[index].is_dirty())
             {
-                throw dirtyException();
+                throw dirtyException(blocks[index].get_data(), (blocks[index].get_tag() << 5 | index)); // Pass the dirty block's data and address to the exception
+            }
+            else
+            {
+                throw cleanException();
+            }
+        }
+    }
+
+    void write_data(Input input)
+    {
+        int index = input.address & 31;
+        int tag = input.address >> 5;
+
+        if (blocks[index].is_valid() && blocks[index].get_tag() == tag)
+        {
+            blocks[index].set_data(input.data);
+        }
+        else
+        {
+            if(blocks[index].is_valid() && blocks[index].is_dirty())
+            {
+                throw dirtyException(blocks[index].get_data(), (blocks[index].get_tag() << 5 | index)); // Pass the dirty block's data and address to the exception
             }
             else
             {
@@ -137,14 +166,17 @@ public:
             cout << "Current State: " << get_state() << endl;
 
             Input input;
-            cout << "Enter operation (0 for read, 1 for write, 2 to quit)";
-            cin >> input.is_write;
+            int option;
+            cout << "Enter operation (0 for read, 1 for write, 2 to quit) : ";
+            cin >> option;
 
-            if(input.is_write == 2)
+            if(option == 2)
             {
                 cout << "Exiting simulator." << endl;
                 break;
             }
+
+            input.is_write = (option == 1);
 
             cout << "Enter address: ";
             cin >> input.address;
@@ -163,43 +195,90 @@ public:
             
             state = 1; // Move to Compare Tag state
             cout << "Current State: " << get_state() << endl;
-
+            
             if(input.is_write)
             {
-
+                while(true)
+                {
+                    try
+                    {
+                        this_thread::sleep_for(chrono::seconds(1)); // Simulate cache access delay
+                        cache.write_data(input);
+                        cout << "Data written to cache." << endl;
+                        state = 0; // Move back to Idle state
+                        break;
+                    }
+                    catch (Cache::dirtyException& e)
+                    {
+                        // Handle write back logic here
+                        write_back_state(input, e.get_dirty_data(), e.get_dirty_address());
+                    }
+                    catch (Cache::cleanException&)
+                    {
+                        allocate_state(input); // Move to Allocate state and handle allocation
+                    }
+                }
+                
             }
             else 
             {
                 try
                 {
+                    this_thread::sleep_for(chrono::seconds(1)); // Simulate cache access delay
                     int data = cache.read_data(input.address);
                     cout << "Data read from cache: " << data << endl;
                     state = 0; // Move back to Idle state
                 }
-                catch (Cache::dirtyException&)
+                catch (Cache::dirtyException& e)
                 {
-                    state = 2; // Move to Write Back state
-                    cout << "Current State: " << get_state() << endl;
                     // Handle write back logic here
+                    write_back_state(input, e.get_dirty_data(), e.get_dirty_address());
+
+                    cout << "Data read from memory and updated in cache: " << cache.read_data(input.address) << endl;
+                    state = 0; // Move back to Idle state
                 }
                 catch (Cache::cleanException&)
                 {
-                    state = 3; // Move to Allocate state
-                    cout << "Current State: " << get_state() << endl;
+                    allocate_state(input); // Move to Allocate state and handle allocation
 
-                    cout << "Fetching data from memory..." << endl;
-                    this_thread::sleep_for(chrono::seconds(1)); // Simulate memory access delay
-                    input.data = memory.read(input.address); // Read data from memory
-
-                    cout << "Updating cache block..." << endl;
-                    this_thread::sleep_for(chrono::seconds(1)); // Simulate cache update delay
-                    cache.update_block(input); // Update cache block with new data
-
-                    cout << "Data read from memory and updated in cache: " << input.data << endl;
+                    cout << "Data read from memory and updated in cache: " << cache.read_data(input.address) << endl;
                     state = 0; // Move back to Idle state
                 }
             }
         }
+    }
+
+    void allocate_state(Input input)
+    {
+        state = 3; // Move to Allocate state
+        cout << "Current State: " << get_state() << endl;
+
+        this_thread::sleep_for(chrono::seconds(1)); // Simulate cache access delay
+
+        cout << "Fetching data from memory..." << endl;
+        this_thread::sleep_for(chrono::seconds(1)); // Simulate memory access delay
+        input.data = memory.read(input.address); // Read data from memory
+
+        cout << "Updating cache block..." << endl;
+        this_thread::sleep_for(chrono::seconds(1)); // Simulate cache update delay
+        cache.update_block(input); // Update cache block with new data
+
+        state = 1;
+        cout << "Current State: " << get_state() << endl;
+    }
+
+    void write_back_state(Input input, int dirty_data, int dirty_address)
+    {
+        state = 2; // Move to Write Back state
+        cout << "Current State: " << get_state() << endl;
+
+        this_thread::sleep_for(chrono::seconds(1)); // Simulate cache access delay
+
+        cout << "Writing back dirty block to memory..." << endl;
+        this_thread::sleep_for(chrono::seconds(1)); // Simulate write back delay
+        memory.write(dirty_address, dirty_data); // Write back dirty block to memory
+
+        allocate_state(input); // After write back, move to Allocate state to fetch new data
     }
 
     string get_state() const
@@ -217,5 +296,7 @@ public:
 
 int main()
 {
-
+    cache_simulator simulator;
+    simulator.run();
+    return 0;
 }
